@@ -587,6 +587,49 @@ function LogLine({ log }: { log: LogEntry }) {
   );
 }
 
+function CollapsibleGoal({ goal }: { goal: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const LINE_LIMIT = 3;
+  const lines = goal.split("\n");
+  const isLong = lines.length > LINE_LIMIT;
+
+  return (
+    <div style={{ margin: "0 0 4px 0" }}>
+      <h2
+        style={{
+          color: "#e2e8f0",
+          margin: 0,
+          fontSize: 18,
+          whiteSpace: "pre-wrap",
+          overflow: "hidden",
+          display: "-webkit-box",
+          WebkitLineClamp: expanded ? undefined : LINE_LIMIT,
+          WebkitBoxOrient: "vertical",
+          lineHeight: "1.4",
+        }}
+      >
+        {goal}
+      </h2>
+      {isLong && (
+        <button
+          onClick={() => setExpanded(!expanded)}
+          style={{
+            background: "none",
+            border: "none",
+            color: "#60a5fa",
+            cursor: "pointer",
+            padding: "4px 0 0 0",
+            fontSize: 12,
+            fontFamily: "monospace",
+          }}
+        >
+          {expanded ? "Show less" : `Show more (${lines.length} lines)`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 function RunView({ run, logs }: { run: Run; logs: LogEntry[] }) {
   const logsContainerRef = useRef<HTMLDivElement>(null);
 
@@ -611,7 +654,7 @@ function RunView({ run, logs }: { run: Run; logs: LogEntry[] }) {
               {elapsed} | {completedTasks}/{totalTasks} tasks
             </span>
           </div>
-          <h2 style={{ color: "#e2e8f0", margin: "0 0 4px 0", fontSize: 18 }}>{run.goal}</h2>
+          <CollapsibleGoal goal={run.goal} />
           <p style={{ color: "#64748b", margin: 0, fontSize: 13, fontFamily: "monospace" }}>{run.targetDir}</p>
         </div>
         <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
