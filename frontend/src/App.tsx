@@ -951,7 +951,13 @@ export function App() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [health, setHealth] = useState<{ status: string; anthropicKeySet: boolean } | null>(null);
+  const [health, setHealth] = useState<{
+    status: string;
+    anthropicKeySet: boolean;
+    providers?: Record<string, boolean>;
+    plannerModel?: string;
+    workerModel?: string;
+  } | null>(null);
   const hasUserSelected = useRef(false);
 
   const run = runs.find((r) => r.id === selectedRunId) || null;
@@ -1145,11 +1151,24 @@ export function App() {
             <div
               style={{
                 fontSize: 11,
-                color: health.anthropicKeySet ? "#475569" : "#ef4444",
+                color: "#475569",
                 fontFamily: "monospace",
               }}
             >
-              API Key: {health.anthropicKeySet ? "set" : "MISSING"}
+              {health.workerModel && (
+                <span style={{ color: "#94a3b8" }}>model: {health.workerModel} </span>
+              )}
+              {health.providers ? (
+                Object.entries(health.providers).map(([name, configured]) => (
+                  <span key={name} style={{ color: configured ? "#475569" : "#ef4444", marginLeft: 6 }}>
+                    {name}: {configured ? "ok" : "no key"}
+                  </span>
+                ))
+              ) : (
+                <span style={{ color: health.anthropicKeySet ? "#475569" : "#ef4444" }}>
+                  API Key: {health.anthropicKeySet ? "set" : "MISSING"}
+                </span>
+              )}
             </div>
           )}
         </div>
@@ -1197,7 +1216,22 @@ export function App() {
                   {error}
                 </div>
               )}
-              {health && !health.anthropicKeySet && (
+              {health && health.providers && !Object.values(health.providers).some(Boolean) && (
+                <div
+                  style={{
+                    marginTop: 16,
+                    padding: 12,
+                    backgroundColor: "#f59e0b20",
+                    border: "1px solid #f59e0b40",
+                    borderRadius: 6,
+                    color: "#f59e0b",
+                    fontSize: 13,
+                  }}
+                >
+                  No API keys configured. Set at least one of: ANTHROPIC_API_KEY, GOOGLE_GENERATIVE_AI_API_KEY
+                </div>
+              )}
+              {health && !health.providers && !health.anthropicKeySet && (
                 <div
                   style={{
                     marginTop: 16,

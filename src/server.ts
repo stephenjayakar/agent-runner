@@ -7,6 +7,7 @@ import { getActiveWorkers, killAllWorkers } from "./worker.js";
 import type { CreateRunRequest } from "./types.js";
 import { existsSync } from "fs";
 import { resolve } from "path";
+import { getConfiguredProviders, getPlannerModelId, getWorkerModelId, getModelConfigSummary } from "./model.js";
 
 const app = express();
 const PORT = parseInt(process.env.PORT || "3111", 10);
@@ -120,6 +121,10 @@ app.get("/api/health", (_req, res) => {
   res.json({
     status: "ok",
     version: "0.1.0",
+    providers: getConfiguredProviders(),
+    plannerModel: getPlannerModelId(),
+    workerModel: getWorkerModelId(),
+    // Backward compat for frontend
     anthropicKeySet: !!process.env.ANTHROPIC_API_KEY,
   });
 });
@@ -137,6 +142,12 @@ process.on("SIGTERM", async () => {
 });
 
 app.listen(PORT, () => {
+  const providers = getConfiguredProviders();
+  const providerStatus = Object.entries(providers)
+    .map(([name, configured]) => `  ║  ${name.padEnd(12)}: ${configured ? "configured" : "NOT SET"}`)
+    .map(line => line.padEnd(44) + "║")
+    .join("\n");
+
   console.log(`
   ╔══════════════════════════════════════════╗
   ║          Agent Runner v0.1.0             ║
@@ -144,7 +155,12 @@ app.listen(PORT, () => {
   ║  Backend:  http://localhost:${PORT}         ║
   ║  Frontend: http://localhost:5173         ║
   ║                                          ║
-  ║  ANTHROPIC_API_KEY: ${process.env.ANTHROPIC_API_KEY ? "set" : "NOT SET"}             ║
+  ║  Models:                                 ║
+  ║  Planner: ${getPlannerModelId().padEnd(29)}║
+  ║  Worker:  ${getWorkerModelId().padEnd(29)}║
+  ║                                          ║
+  ║  Providers:                              ║
+${providerStatus}
   ╚══════════════════════════════════════════╝
   `);
 });

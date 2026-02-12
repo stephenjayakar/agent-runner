@@ -1,5 +1,6 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { execSync, exec, spawn, type ChildProcess } from "child_process";
+import { generateText, tool, stepCountIs } from "ai";
+import { z } from "zod";
+import { execSync, exec, type ChildProcess } from "child_process";
 import { promisify } from "util";
 import { readFileSync, writeFileSync, existsSync, statSync, readdirSync } from "fs";
 
@@ -10,10 +11,10 @@ import { nanoid } from "nanoid";
 import { eventBus } from "./events.js";
 import type { Worker, Task, LogEntry, WorkerActivity, Skill } from "./types.js";
 import { loadSkills, buildSkillsSummary, getSkillContent } from "./skills.js";
+import { getWorkerModel, getWorkerModelId } from "./model.js";
 
 // ---- Constants ----
-const MODEL = "claude-opus-4-6";
-const MAX_TOKENS = 16384;
+const MAX_OUTPUT_TOKENS = 16384;
 const MAX_TOOL_RESULT_CHARS = 60000;
 const MAX_STEPS = 200; // hard limit on agentic loop steps
 const MAX_FILE_LINES = 2000;
@@ -54,177 +55,7 @@ function addActivity(worker: Worker, type: WorkerActivity["type"], summary: stri
 }
 
 // =====================================================================
-// Tool Definitions for Claude
-// =====================================================================
-
-const toolDefinitions: Anthropic.Tool[] = [
-  {
-    name: "bash",
-    description: `Execute a bash command in the project directory. The command runs with a 120-second timeout.
-Use this for: running builds, tests, git commands, installing packages, checking file existence, and any shell operations.
-Do NOT use this for reading file contents (use the read tool), writing files (use the write tool), or editing files (use the edit tool).
-Commands run in the project root directory.`,
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        command: {
-          type: "string",
-          description: "The bash command to execute",
-        },
-        timeout: {
-          type: "number",
-          description: "Optional timeout in milliseconds (default 120000)",
-        },
-      },
-      required: ["command"],
-    },
-  },
-  {
-    name: "read",
-    description: `Read a file from the filesystem. Returns file contents with line numbers.
-- The filePath must be an absolute path
-- By default reads up to 2000 lines from the beginning
-- Use offset and limit for pagination on large files
-- Lines longer than 2000 characters are truncated
-- Can read any text file in the project`,
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        filePath: {
-          type: "string",
-          description: "Absolute path to the file to read",
-        },
-        offset: {
-          type: "number",
-          description: "Line number to start reading from (0-based)",
-        },
-        limit: {
-          type: "number",
-          description: "Number of lines to read (default 2000)",
-        },
-      },
-      required: ["filePath"],
-    },
-  },
-  {
-    name: "write",
-    description: `Write content to a file. Creates the file if it doesn't exist, overwrites if it does.
-- The filePath must be an absolute path
-- Creates parent directories automatically
-- Use this to create new files
-- ALWAYS prefer editing existing files with the edit tool instead of rewriting the entire file`,
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        filePath: {
-          type: "string",
-          description: "Absolute path to the file to write",
-        },
-        content: {
-          type: "string",
-          description: "The full content to write to the file",
-        },
-      },
-      required: ["filePath", "content"],
-    },
-  },
-  {
-    name: "edit",
-    description: `Perform exact string replacement in a file. Finds oldString in the file and replaces it with newString.
-- Both oldString and newString must be provided and must be different
-- oldString must match exactly (including whitespace and indentation)
-- The edit will fail if oldString is not found, or if it's found multiple times (provide more context to make it unique)
-- Use replaceAll: true to replace ALL occurrences`,
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        filePath: {
-          type: "string",
-          description: "Absolute path to the file to edit",
-        },
-        oldString: {
-          type: "string",
-          description: "The exact string to find and replace",
-        },
-        newString: {
-          type: "string",
-          description: "The replacement string",
-        },
-        replaceAll: {
-          type: "boolean",
-          description: "Replace all occurrences (default false)",
-        },
-      },
-      required: ["filePath", "oldString", "newString"],
-    },
-  },
-  {
-    name: "glob",
-    description: `Find files matching a glob pattern. Returns matching file paths sorted by modification time.
-- Supports patterns like "**/*.ts", "src/**/*.cpp", "*.json"
-- Returns up to 200 results
-- Use this to find files by name pattern`,
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        pattern: {
-          type: "string",
-          description: "Glob pattern to match files",
-        },
-        path: {
-          type: "string",
-          description: "Directory to search in (defaults to project root)",
-        },
-      },
-      required: ["pattern"],
-    },
-  },
-  {
-    name: "grep",
-    description: `Search file contents using a regular expression. Returns file paths and line numbers of matches.
-- Uses ripgrep for fast searching
-- Supports full regex syntax
-- Filter by file pattern with the include parameter (e.g., "*.ts", "*.{cpp,h}")
-- Returns up to 100 results sorted by modification time`,
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        pattern: {
-          type: "string",
-          description: "Regex pattern to search for",
-        },
-        path: {
-          type: "string",
-          description: "Directory to search in (defaults to project root)",
-        },
-        include: {
-          type: "string",
-          description: "File pattern to include (e.g., '*.ts', '*.{cpp,h}')",
-        },
-      },
-      required: ["pattern"],
-    },
-  },
-  {
-    name: "skill",
-    description: `Load a skill by name. Skills provide domain-specific instructions, workflows, and conventions for particular tasks.
-Use this when you need specialized guidance for a task. The skill content will be returned as instructions for you to follow.
-Available skills are listed in the system prompt.`,
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        name: {
-          type: "string",
-          description: "The name of the skill to load",
-        },
-      },
-      required: ["name"],
-    },
-  },
-];
-
-// =====================================================================
-// Tool Execution
+// Tool Execution Functions
 // =====================================================================
 
 async function executeBash(
@@ -422,7 +253,7 @@ async function executeGrep(
   }
 }
 
-function executeSkill(
+function executeSkillTool(
   args: { name: string },
   skills: Skill[]
 ): string {
@@ -434,30 +265,129 @@ function executeSkill(
   return `# Skill: ${args.name}\n\n${content}`;
 }
 
-async function executeTool(
-  name: string,
-  args: Record<string, any>,
-  cwd: string,
-  skills: Skill[]
-): Promise<string> {
-  switch (name) {
-    case "bash":
-      return executeBash(args as any, cwd);
-    case "read":
-      return executeRead(args as any, cwd);
-    case "write":
-      return executeWrite(args as any, cwd);
-    case "edit":
-      return executeEdit(args as any, cwd);
-    case "glob":
-      return executeGlob(args as any, cwd);
-    case "grep":
-      return executeGrep(args as any, cwd);
-    case "skill":
-      return executeSkill(args as any, skills);
-    default:
-      return `Unknown tool: ${name}`;
-  }
+// =====================================================================
+// Build AI SDK tools with execute functions
+// =====================================================================
+
+function buildTools(targetDir: string, worker: Worker, skills: Skill[]) {
+  return {
+    bash: tool({
+      description: `Execute a bash command in the project directory. The command runs with a 120-second timeout.
+Use this for: running builds, tests, git commands, installing packages, checking file existence, and any shell operations.
+Do NOT use this for reading file contents (use the read tool), writing files (use the write tool), or editing files (use the edit tool).
+Commands run in the project root directory.`,
+      inputSchema: z.object({
+        command: z.string().describe("The bash command to execute"),
+        timeout: z.number().optional().describe("Optional timeout in milliseconds (default 120000)"),
+      }),
+      execute: async (args) => {
+        addActivity(worker, "bash", `$ ${String(args.command || "").slice(0, 150)}`);
+        try {
+          return await executeBash(args, targetDir);
+        } catch (err: any) {
+          addActivity(worker, "error", `bash error: ${err.message.slice(0, 150)}`);
+          return `Tool execution error: ${err.message}`;
+        }
+      },
+    }),
+
+    read: tool({
+      description: `Read a file from the filesystem. Returns file contents with line numbers.
+- The filePath must be an absolute path
+- By default reads up to 2000 lines from the beginning
+- Use offset and limit for pagination on large files
+- Lines longer than 2000 characters are truncated
+- Can read any text file in the project`,
+      inputSchema: z.object({
+        filePath: z.string().describe("Absolute path to the file to read"),
+        offset: z.number().optional().describe("Line number to start reading from (0-based)"),
+        limit: z.number().optional().describe("Number of lines to read (default 2000)"),
+      }),
+      execute: async (args) => {
+        addActivity(worker, "tool_call", `read: ${args.filePath}`);
+        return executeRead(args, targetDir);
+      },
+    }),
+
+    write: tool({
+      description: `Write content to a file. Creates the file if it doesn't exist, overwrites if it does.
+- The filePath must be an absolute path
+- Creates parent directories automatically
+- Use this to create new files
+- ALWAYS prefer editing existing files with the edit tool instead of rewriting the entire file`,
+      inputSchema: z.object({
+        filePath: z.string().describe("Absolute path to the file to write"),
+        content: z.string().describe("The full content to write to the file"),
+      }),
+      execute: async (args) => {
+        addActivity(worker, "file_create", `Create: ${args.filePath}`);
+        return executeWrite(args, targetDir);
+      },
+    }),
+
+    edit: tool({
+      description: `Perform exact string replacement in a file. Finds oldString in the file and replaces it with newString.
+- Both oldString and newString must be provided and must be different
+- oldString must match exactly (including whitespace and indentation)
+- The edit will fail if oldString is not found, or if it's found multiple times (provide more context to make it unique)
+- Use replaceAll: true to replace ALL occurrences`,
+      inputSchema: z.object({
+        filePath: z.string().describe("Absolute path to the file to edit"),
+        oldString: z.string().describe("The exact string to find and replace"),
+        newString: z.string().describe("The replacement string"),
+        replaceAll: z.boolean().optional().describe("Replace all occurrences (default false)"),
+      }),
+      execute: async (args) => {
+        addActivity(worker, "file_edit", `Edit: ${args.filePath}`);
+        return executeEdit(args, targetDir);
+      },
+    }),
+
+    glob: tool({
+      description: `Find files matching a glob pattern. Returns matching file paths sorted by modification time.
+- Supports patterns like "**/*.ts", "src/**/*.cpp", "*.json"
+- Returns up to 200 results
+- Use this to find files by name pattern`,
+      inputSchema: z.object({
+        pattern: z.string().describe("Glob pattern to match files"),
+        path: z.string().optional().describe("Directory to search in (defaults to project root)"),
+      }),
+      execute: async (args) => {
+        addActivity(worker, "tool_call", `glob: ${JSON.stringify(args).slice(0, 100)}`);
+        return executeGlob(args, targetDir);
+      },
+    }),
+
+    grep: tool({
+      description: `Search file contents using a regular expression. Returns file paths and line numbers of matches.
+- Uses ripgrep for fast searching
+- Supports full regex syntax
+- Filter by file pattern with the include parameter (e.g., "*.ts", "*.{cpp,h}")
+- Returns up to 100 results sorted by modification time`,
+      inputSchema: z.object({
+        pattern: z.string().describe("Regex pattern to search for"),
+        path: z.string().optional().describe("Directory to search in (defaults to project root)"),
+        include: z.string().optional().describe("File pattern to include (e.g., '*.ts', '*.{cpp,h}')"),
+      }),
+      execute: async (args) => {
+        addActivity(worker, "tool_call", `grep: ${JSON.stringify(args).slice(0, 100)}`);
+        return executeGrep(args, targetDir);
+      },
+    }),
+
+    skill: tool({
+      description: `Load a skill by name. Skills provide domain-specific instructions, workflows, and conventions for particular tasks.
+Use this when you need specialized guidance for a task. The skill content will be returned as instructions for you to follow.
+Available skills are listed in the system prompt.`,
+      inputSchema: z.object({
+        name: z.string().describe("The name of the skill to load"),
+      }),
+      execute: async (args) => {
+        addActivity(worker, "tool_call", `skill: ${args.name}`);
+        return executeSkillTool(args, skills);
+      },
+    }),
+  };
 }
 
 // =====================================================================
@@ -470,7 +400,7 @@ async function runAgentLoop(
   targetDir: string,
   signal: AbortSignal
 ): Promise<string> {
-  const client = new Anthropic();
+  const modelId = getWorkerModelId();
 
   // Load skills from the target directory
   const skills = loadSkills(targetDir);
@@ -498,128 +428,53 @@ ${task.description}
 
 Begin working on this task now.`;
 
-  const messages: Anthropic.MessageParam[] = [
-    { role: "user", content: userMessage },
-  ];
+  // Build tools with closures over worker/targetDir/skills for logging
+  const tools = buildTools(targetDir, worker, skills);
 
-  let totalSteps = 0;
+  let stepCount = 0;
   let lastTextResponse = "";
 
-  while (totalSteps < MAX_STEPS) {
-    if (signal.aborted) throw new Error("Aborted");
-    totalSteps++;
+  try {
+    const result = await generateText({
+      model: getWorkerModel(),
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
+      system: systemPrompt,
+      prompt: userMessage,
+      tools,
+      stopWhen: stepCountIs(MAX_STEPS),
+      maxRetries: 3,
+      abortSignal: signal,
+      onStepFinish: (stepResult) => {
+        stepCount++;
+        addLog(worker, "info", `Agent step ${stepCount}...`);
 
-    addLog(worker, "info", `Agent step ${totalSteps}...`);
-
-    let response: Anthropic.Message;
-    try {
-      response = await client.messages.create({
-        model: MODEL,
-        max_tokens: MAX_TOKENS,
-        system: systemPrompt,
-        tools: toolDefinitions,
-        messages,
-      });
-    } catch (err: any) {
-      // Handle rate limiting with retry
-      if (err.status === 429 || err.error?.type === "rate_limit_error") {
-        const retryAfter = parseInt(err.headers?.["retry-after"] || "30", 10);
-        addLog(worker, "warn", `Rate limited. Retrying in ${retryAfter}s...`);
-        await new Promise((r) => setTimeout(r, retryAfter * 1000));
-        continue;
-      }
-      // Handle overloaded
-      if (err.status === 529) {
-        addLog(worker, "warn", "API overloaded. Retrying in 30s...");
-        await new Promise((r) => setTimeout(r, 30_000));
-        continue;
-      }
-      throw err;
-    }
-
-    // Process the response
-    const assistantContent: Anthropic.ContentBlock[] = response.content;
-
-    // Add the assistant message to conversation
-    messages.push({ role: "assistant", content: assistantContent });
-
-    // Check for text blocks
-    for (const block of assistantContent) {
-      if (block.type === "text") {
-        lastTextResponse = block.text;
-        if (block.text.length > 20) {
-          addActivity(worker, "text", block.text.slice(0, 200));
+        // Capture text output
+        if (stepResult.text && stepResult.text.length > 20) {
+          lastTextResponse = stepResult.text;
+          addActivity(worker, "text", stepResult.text.slice(0, 200));
         }
-      }
+      },
+    });
+
+    // Final text from the last step
+    if (result.text) {
+      lastTextResponse = result.text;
     }
 
-    // Check if we should stop
-    if (response.stop_reason === "end_turn") {
-      addLog(worker, "info", `Agent finished after ${totalSteps} steps (end_turn)`);
-      break;
+    addLog(worker, "info", `Agent finished after ${stepCount} steps`);
+  } catch (err: any) {
+    // Re-throw abort errors
+    if (signal.aborted || err.name === "AbortError") {
+      throw new Error("Aborted");
     }
 
-    // Execute tool calls
-    const toolUseBlocks = assistantContent.filter(
-      (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
-    );
-
-    if (toolUseBlocks.length === 0) {
-      addLog(worker, "info", `Agent finished after ${totalSteps} steps (no tool calls)`);
-      break;
-    }
-
-    // Execute all tool calls and build results
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
-
-    for (const toolUse of toolUseBlocks) {
-      if (signal.aborted) throw new Error("Aborted");
-
-      const toolName = toolUse.name;
-      const toolArgs = toolUse.input as Record<string, any>;
-
-      // Log the tool call
-      if (toolName === "bash") {
-        addActivity(worker, "bash", `$ ${String(toolArgs.command || "").slice(0, 150)}`);
-      } else if (toolName === "write") {
-        addActivity(worker, "file_create", `Create: ${toolArgs.filePath}`);
-      } else if (toolName === "edit") {
-        addActivity(worker, "file_edit", `Edit: ${toolArgs.filePath}`);
-      } else if (toolName === "read") {
-        addActivity(worker, "tool_call", `read: ${toolArgs.filePath}`);
-      } else {
-        addActivity(
-          worker,
-          "tool_call",
-          `${toolName}: ${JSON.stringify(toolArgs).slice(0, 100)}`
-        );
-      }
-
-      // Execute the tool
-      let result: string;
-      try {
-        result = await executeTool(toolName, toolArgs, targetDir, skills);
-      } catch (err: any) {
-        result = `Tool execution error: ${err.message}`;
-        addActivity(worker, "error", `${toolName} error: ${err.message.slice(0, 150)}`);
-      }
-
-      toolResults.push({
-        type: "tool_result",
-        tool_use_id: toolUse.id,
-        content: result,
-      });
-    }
-
-    // Add tool results to conversation
-    messages.push({ role: "user", content: toolResults });
+    // Handle rate limiting with manual retry logic
+    // The AI SDK's maxRetries handles transient errors, but we add logging
+    addLog(worker, "error", `Agent loop error: ${err.message}`);
+    throw err;
   }
 
-  if (totalSteps >= MAX_STEPS) {
-    addLog(worker, "warn", `Agent hit step limit (${MAX_STEPS})`);
-  }
-
-  return lastTextResponse || `Task completed after ${totalSteps} steps`;
+  return lastTextResponse || `Task completed after ${stepCount} steps`;
 }
 
 function buildSystemPrompt(targetDir: string, skills: Skill[] = []): string {
@@ -689,6 +544,7 @@ export function spawnWorker(
   task: Task,
   targetDir: string
 ): { worker: Worker; done: Promise<void> } {
+  const modelId = getWorkerModelId();
   const worker: Worker = {
     id: nanoid(10),
     port: 0, // No port needed - runs in-process
@@ -708,7 +564,7 @@ export function spawnWorker(
   activeWorkers.set(worker.id, instance);
 
   eventBus.emit("worker:created", worker);
-  addLog(worker, "info", `Worker spawned for task: ${task.title} (in-process, model: ${MODEL})`);
+  addLog(worker, "info", `Worker spawned for task: ${task.title} (in-process, model: ${modelId})`);
 
   const done = (async () => {
     try {

@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { generateText } from "ai";
 import { nanoid } from "nanoid";
 import { eventBus } from "./events.js";
 import type { Task, Run, Worker, Judgement } from "./types.js";
@@ -7,10 +7,7 @@ import { execSync } from "child_process";
 import { readdirSync, readFileSync, statSync, existsSync } from "fs";
 import { join, relative } from "path";
 import { loadSkills, buildSkillsContextForPlanner } from "./skills.js";
-
-function getAnthropicClient(): Anthropic {
-  return new Anthropic();
-}
+import { getPlannerModel, getPlannerModelId } from "./model.js";
 
 /** Build a snapshot of the target directory for the planner to reason about */
 function getDirectorySnapshot(targetDir: string, maxDepth = 3): string {
@@ -104,12 +101,12 @@ function getProjectContext(targetDir: string): string {
 }
 
 export async function createInitialPlan(run: Run): Promise<{ analysis: string; tasks: Task[] }> {
-  const client = getAnthropicClient();
+  const modelId = getPlannerModelId();
 
   eventBus.emit("log", {
     level: "info",
     source: "planner",
-    message: `Analyzing codebase at ${run.targetDir}...`,
+    message: `Analyzing codebase at ${run.targetDir} (model: ${modelId})...`,
   });
 
   const dirSnapshot = getDirectorySnapshot(run.targetDir);
@@ -170,14 +167,11 @@ Respond with a JSON object (no markdown fencing) with this exact schema:
 The "dependencies" field should contain titles of tasks that must complete before this one can start. Keep dependencies minimal - prefer independent tasks.
 Priority 1 is highest priority. Order tasks so the most foundational ones are priority 1.`;
 
-  const response = await client.messages.create({
-    model: "claude-opus-4-6",
-    max_tokens: 8192,
-    messages: [{ role: "user", content: prompt }],
+  const { text } = await generateText({
+    model: getPlannerModel(),
+    maxOutputTokens: 8192,
+    prompt,
   });
-
-  const text =
-    response.content[0].type === "text" ? response.content[0].text : "";
 
   // Parse the JSON response
   let parsed: { analysis: string; tasks: Array<{ title: string; description: string; priority: number; dependencies: string[] }> };
@@ -235,8 +229,6 @@ export async function judgeTaskCompletion(
   goalComplete: boolean;
   newTasks: Array<{ title: string; description: string; priority: number; dependencies: string[] }>;
 }> {
-  const client = getAnthropicClient();
-
   // Build context of all tasks
   const worker = run.workers.find((w) => w.taskId === completedTask.id);
   const activitySummary = worker ? getWorkerActivitySummary(worker) : "(no worker assigned)";
@@ -311,13 +303,11 @@ Set goalComplete=true ONLY if the overall goal is fully achieved (or close enoug
 Set goalComplete=false if there's still meaningful work pending or running.
 Keep newTasks empty ([]) unless you need to spawn specific follow-up work.`;
 
-  const response = await client.messages.create({
-    model: "claude-opus-4-6",
-    max_tokens: 4096,
-    messages: [{ role: "user", content: prompt }],
+  const { text } = await generateText({
+    model: getPlannerModel(),
+    maxOutputTokens: 4096,
+    prompt,
   });
-
-  const text = response.content[0].type === "text" ? response.content[0].text : "";
 
   try {
     const parsed = JSON.parse(text);
